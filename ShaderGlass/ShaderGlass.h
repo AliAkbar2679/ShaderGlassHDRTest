@@ -10,6 +10,7 @@ GNU General Public License v3.0
 #include "Preset.h"
 #include "ShaderPass.h"
 #include "Shaders\PreprocessShaderDef.h"
+#include "Shaders\HDRShaderDef.h"
 #include "Shaders\PassthroughShaderDef.h"
 #include "Shaders\PassthroughPresetDef.h"
 
@@ -54,6 +55,8 @@ public:
 private:
     bool TryResizeSwapChain(const RECT& clientRect, bool force);
     void SetSwapchainColorSpace();
+    void UpdateHDRMetadata();
+    void UpdateHDRPassState();
     void DestroyShaders();
     void DestroyPasses();
     void DestroyTargets();
@@ -68,7 +71,7 @@ private:
     winrt::com_ptr<ID3D11Device>             m_device {nullptr};
     winrt::com_ptr<ID3D11ShaderResourceView> m_originalView {nullptr};
     winrt::com_ptr<IDXGISwapChain1>          m_swapChain {nullptr};
-    winrt::com_ptr<IDXGISwapChain3>          m_swapChain3 {nullptr};
+    winrt::com_ptr<IDXGISwapChain4>          m_swapChain4 {nullptr};
     winrt::com_ptr<ID3D11RasterizerState>    m_rasterizerState {nullptr};
     winrt::com_ptr<ID3D11Texture2D>          m_displayTexture {nullptr};
     winrt::com_ptr<ID3D11RenderTargetView>   m_displayRenderTarget {nullptr};
@@ -114,6 +117,11 @@ private:
     Preset                                            m_preprocessPreset;
     Shader                                            m_preprocessShader;
     ShaderPass                                        m_preprocessPass;
+    HDRShaderDef                                      m_hdrShaderDef;
+    PresetDef                                         m_hdrPresetDef;
+    Preset                                            m_hdrPreset;
+    Shader                                            m_hdrShader;
+    float                                             m_lastHDRMaxNits {0.0f};
     std::unique_ptr<Preset>                           m_shaderPreset {nullptr};
     std::unique_ptr<Preset>                           m_newShaderPreset {nullptr};
     std::vector<std::tuple<int, std::string, double>> m_newParams;
