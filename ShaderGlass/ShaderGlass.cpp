@@ -219,7 +219,41 @@ void ShaderGlass::RebuildShaders()
         m_presetTextures.insert(make_pair(texture.second.m_name, texture.second.m_textureView));
     }
 
-    ResetParams();
+    // Reset only preset shader params; preserve user's active HDR calibration across shader switches
+    for(auto& s : m_shaderPreset->m_shaders)
+        for(auto& p : s.Params())
+        {
+            if(p->size == 4 && p->name != "FrameCount")
+            {
+                auto hasOverride = false;
+                for(auto& o : m_shaderPreset->m_presetDef.Overrides)
+                {
+                    if(o.name == p->name)
+                    {
+                        s.SetParam(p, &o.value);
+                        hasOverride = true;
+                        break;
+                    }
+                }
+                if(!hasOverride)
+                {
+                    s.SetParam(p, &p->defaultValue);
+                }
+            }
+        }
+
+    if(m_useHDR)
+    {
+        for(auto& p : m_hdrShader.Params())
+        {
+            if(p->size == 4 && p->maxValue != p->minValue)
+            {
+                m_hdrShader.SetParam(p, &p->currentValue);
+            }
+        }
+        UpdateHDRMetadata();
+    }
+
     UpdateHDRPassState();
 }
 void ShaderGlass::SetInputScale(float w, float h)
@@ -362,7 +396,8 @@ void ShaderGlass::ResetParams()
         {
             if(p->size == 4 && p->maxValue != p->minValue)
             {
-                m_hdrShader.SetParam(p, &p->defaultValue);
+                p->currentValue = p->defaultValue;
+                m_hdrShader.SetParam(p, &p->currentValue);
             }
         }
         UpdateHDRMetadata();
@@ -915,6 +950,12 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
                 const auto& pass = m_shaderPasses[p - 1];
 
                 desc2.Format = pass.m_shader.m_format;
+                // Prevent hardware SRGB-to-linear conversion when feeding into RetroArch's HDR pass,
+                // which expects gamma-encoded SDR input and applies contrast/2.2 curve itself
+                if(m_useHDR && p == m_shaderPasses.size() - 1 && desc2.Format == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB)
+                {
+                    desc2.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+                }
 
                 desc2.Width     = pass.m_destWidth;
                 desc2.Height    = pass.m_destHeight;
