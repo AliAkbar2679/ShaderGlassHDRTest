@@ -190,6 +190,7 @@
     <ClInclude Include="ShaderGlass.h" />
     <ClInclude Include="ShaderList.h" />
     <ClInclude Include="ShaderPass.h" />
+    <ClInclude Include="Shaders\HDRShaderDef.h" />
     <ClInclude Include="Shaders\PassthroughPresetDef.h" />
     <ClInclude Include="Shaders\PassthroughShaderDef.h" />
     <ClInclude Include="Shaders\PreprocessShaderDef.h" />
