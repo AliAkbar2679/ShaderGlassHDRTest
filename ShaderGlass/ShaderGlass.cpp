@@ -1,11 +1,12 @@
 /*
 ShaderGlass: shader effect overlay
 Copyright (C) 2021-2025 mausimus (mausimus.net)
-https://github.com/mausimus/ShaderGlass
+https://github.com
 GNU General Public License v3.0
 */
 
 #include "pch.h"
+#include <dxgi1_5.h>
 #include "ShaderGlass.h"
 #include "ShaderList.h"
 #include "CursorEmulator.h"
@@ -17,6 +18,7 @@ static const float background_colour[4] = {0, 0, 0, 1.0f};
 ShaderGlass::ShaderGlass(CursorEmulator& cursorEmulator) :
     m_lastSize {}, m_lastPos {}, m_lastCaptureWindowPos {}, m_lastCaptureWindowSize {}, m_passthroughDef(), m_shaderPreset(new Preset(m_passthroughDef)),
     m_preprocessShader(m_preprocessShaderDef), m_preprocessPreset(m_preprocessPresetDef), m_preprocessPass(m_preprocessShader, m_preprocessPreset, true),
+    m_hdrShader(m_hdrShaderDef), m_hdrPreset(m_hdrPresetDef),
     m_cursorEmulator(cursorEmulator)
 { }
 
@@ -62,7 +64,6 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
     }
     else if(!captureWindow && !captureMonitor && !clone)
     {
-        // All Desktops glass
         m_monitorOffset.x = GetSystemMetrics(SM_XVIRTUALSCREEN);
         m_monitorOffset.y = GetSystemMetrics(SM_YVIRTUALSCREEN);
     }
@@ -72,7 +73,6 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
         m_monitorOffset.y = 0;
     }
 
-    // remember initial size
     m_lastPos.x = 0;
     m_lastPos.y = 0;
     RECT clientRect;
@@ -83,8 +83,6 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
     m_prevTicks          = GetTickCount64();
     m_startTicks         = GetTickCount64();
     m_prevLogicalFrameNo = 0;
-
-    // create swapchain
     {
         winrt::com_ptr<IDXGIFactory2> dxgiFactory;
         {
@@ -103,13 +101,12 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
         DXGI_SWAP_CHAIN_DESC1 d3d11SwapChainDesc = {};
         d3d11SwapChainDesc.Width                 = 0;
         d3d11SwapChainDesc.Height                = 0;
-        d3d11SwapChainDesc.Format                = m_useHDR ? DXGI_FORMAT_R16G16B16A16_FLOAT : DXGI_FORMAT_B8G8R8A8_UNORM;
+        d3d11SwapChainDesc.Format                = m_useHDR ? DXGI_FORMAT_R10G10B10A2_UNORM : DXGI_FORMAT_B8G8R8A8_UNORM;
         d3d11SwapChainDesc.SampleDesc.Count      = 1;
         d3d11SwapChainDesc.SampleDesc.Quality    = 0;
         d3d11SwapChainDesc.BufferUsage           = DXGI_USAGE_RENDER_TARGET_OUTPUT;
         d3d11SwapChainDesc.BufferCount           = 3;
-        // flip mode has a weird bug on Win 10 where the first frame doesn't align with the window client area, until window is moved :(
-        if(m_flipMode)
+        if(m_flipMode || m_useHDR)
         {
             d3d11SwapChainDesc.Scaling    = DXGI_SCALING_NONE;
             d3d11SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_FLIP_DISCARD;
@@ -120,7 +117,7 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
             d3d11SwapChainDesc.SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
         }
         d3d11SwapChainDesc.AlphaMode = DXGI_ALPHA_MODE_UNSPECIFIED;
-        if(m_flipMode && m_allowTearing)
+        if((m_flipMode || m_useHDR) && m_allowTearing)
         {
             d3d11SwapChainDesc.Flags = DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
         }
@@ -150,25 +147,57 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
 
     if(m_useHDR)
     {
-        hr = m_swapChain->QueryInterface(__uuidof(IDXGISwapChain3), reinterpret_cast<void**>(m_swapChain3.put()));
+        hr = m_swapChain->QueryInterface(__uuidof(IDXGISwapChain4), reinterpret_cast<void**>(m_swapChain4.put()));
         assert(SUCCEEDED(hr));
 
         SetSwapchainColorSpace();
+        UpdateHDRMetadata();
     }
 
     m_context->RSSetState(m_rasterizerState.get());
 
     m_preprocessShader.Create(m_device);
     m_preprocessPass.Initialize(m_device, m_context);
+    if(m_useHDR)
+    {
+        m_hdrShader.Create(m_device);
+    }
     RebuildShaders();
 
     m_running = true;
 }
 
+void ShaderGlass::UpdateHDRPassState()
+{
+    if(!m_useHDR)
+        return;
+
+    float inverseTonemap = 1.0f;
+    float hdr10          = 1.0f;
+
+    if(!m_shaderPreset->m_shaders.empty())
+    {
+        const auto& lastShader = m_shaderPreset->m_shaders.back();
+        if(lastShader.m_format == DXGI_FORMAT_R10G10B10A2_UNORM)
+        {
+            inverseTonemap = 0.0f;
+            hdr10          = 0.0f;
+        }
+        else if(lastShader.m_format == DXGI_FORMAT_R16G16B16A16_FLOAT)
+        {
+            inverseTonemap = 0.0f;
+            hdr10          = 1.0f;
+        }
+    }
+
+    m_hdrShader.SetParam("HDRInverseTonemap", &inverseTonemap);
+    m_hdrShader.SetParam("HDR10", &hdr10);
+}
+
 void ShaderGlass::RebuildShaders()
 {
     m_shaderPreset->Create(m_device);
-    m_shaderPasses.reserve(m_shaderPreset->m_shaders.size() + (m_vertical ? 1 : 0));
+    m_shaderPasses.reserve(m_shaderPreset->m_shaders.size() + (m_vertical ? 1 : 0) + (m_useHDR ? 1 : 0));
     for(auto& shader : m_shaderPreset->m_shaders)
     {
         m_shaderPasses.emplace_back(shader, *m_shaderPreset, m_device, m_context);
@@ -176,6 +205,10 @@ void ShaderGlass::RebuildShaders()
     if(m_vertical)
     {
         m_shaderPasses.emplace_back(m_preprocessShader, m_preprocessPreset, m_device, m_context);
+    }
+    if(m_useHDR)
+    {
+        m_shaderPasses.emplace_back(m_hdrShader, m_hdrPreset, m_device, m_context);
     }
     float vertical = m_vertical ? 1.0f : 0.0f;
     m_preprocessShader.SetParam("SGVertical", &vertical);
@@ -187,8 +220,8 @@ void ShaderGlass::RebuildShaders()
     }
 
     ResetParams();
+    UpdateHDRPassState();
 }
-
 void ShaderGlass::SetInputScale(float w, float h)
 {
     m_inputScaleW   = w;
@@ -275,6 +308,16 @@ void ShaderGlass::UpdateParams()
             if(p->size == 4 && p->name != "FrameCount")
                 s.SetParam(p, &p->currentValue);
         }
+
+    if(m_useHDR)
+    {
+        for(auto& p : m_hdrShader.Params())
+        {
+            if(p->size == 4 && p->maxValue != p->minValue)
+                m_hdrShader.SetParam(p, &p->currentValue);
+        }
+        UpdateHDRMetadata();
+    }
 }
 
 float ShaderGlass::GetDefaultValue(ShaderParam* p)
@@ -296,7 +339,6 @@ void ShaderGlass::ResetParams()
         {
             if(p->size == 4 && p->name != "FrameCount")
             {
-                // check for preset override
                 auto hasOverride = false;
                 for(auto& o : m_shaderPreset->m_presetDef.Overrides)
                 {
@@ -313,6 +355,18 @@ void ShaderGlass::ResetParams()
                 }
             }
         }
+
+    if(m_useHDR)
+    {
+        for(auto& p : m_hdrShader.Params())
+        {
+            if(p->size == 4 && p->maxValue != p->minValue)
+            {
+                m_hdrShader.SetParam(p, &p->defaultValue);
+            }
+        }
+        UpdateHDRMetadata();
+    }
 }
 
 std::vector<std::tuple<int, ShaderParam*>> ShaderGlass::Params()
@@ -327,25 +381,74 @@ std::vector<std::tuple<int, ShaderParam*>> ShaderGlass::Params()
 
         i++;
     }
+    if(m_useHDR)
+    {
+        for(auto& p : m_hdrShader.Params())
+        {
+            if(p->size == 4 && p->maxValue != p->minValue)
+                params.push_back(std::make_tuple(-2, p));
+        }
+    }
     return params;
 }
 
 void ShaderGlass::SetSwapchainColorSpace()
 {
-    assert(m_swapChain3.get());
+    assert(m_swapChain4.get());
 
-    if(m_swapChain3.get())
+    if(m_swapChain4.get())
     {
-        hr = m_swapChain3->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G10_NONE_P709);
-        assert(SUCCEEDED(hr));
+        UINT support = 0;
+        if(SUCCEEDED(m_swapChain4->CheckColorSpaceSupport(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020, &support)) &&
+           (support & DXGI_SWAP_CHAIN_COLOR_SPACE_SUPPORT_FLAG_PRESENT))
+        {
+            hr = m_swapChain4->SetColorSpace1(DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020);
+            assert(SUCCEEDED(hr));
+        }
     }
+}
+
+void ShaderGlass::UpdateHDRMetadata()
+{
+    if(!m_useHDR || !m_swapChain4.get())
+        return;
+
+    float maxNits = 1000.0f;
+    for(const auto& p : m_hdrShader.Params())
+    {
+        if(p->name == "HDRMaxNits")
+        {
+            maxNits = p->currentValue;
+            break;
+        }
+    }
+
+    if(maxNits == m_lastHDRMaxNits)
+        return;
+
+    m_lastHDRMaxNits = maxNits;
+
+    DXGI_HDR_METADATA_HDR10 metaData   = {};
+    metaData.RedPrimary[0]             = (UINT16)(0.70800f * 50000.0f);
+    metaData.RedPrimary[1]             = (UINT16)(0.29200f * 50000.0f);
+    metaData.GreenPrimary[0]           = (UINT16)(0.17000f * 50000.0f);
+    metaData.GreenPrimary[1]           = (UINT16)(0.79700f * 50000.0f);
+    metaData.BluePrimary[0]            = (UINT16)(0.13100f * 50000.0f);
+    metaData.BluePrimary[1]            = (UINT16)(0.04600f * 50000.0f);
+    metaData.WhitePoint[0]             = (UINT16)(0.31270f * 50000.0f);
+    metaData.WhitePoint[1]             = (UINT16)(0.32900f * 50000.0f);
+    metaData.MaxMasteringLuminance     = (UINT)(maxNits * 10000.0f);
+    metaData.MinMasteringLuminance     = (UINT)(0.001f * 10000.0f);
+    metaData.MaxContentLightLevel      = 0;
+    metaData.MaxFrameAverageLightLevel = 0;
+
+    m_swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(DXGI_HDR_METADATA_HDR10), &metaData);
 }
 
 bool ShaderGlass::TryResizeSwapChain(const RECT& clientRect, bool force)
 {
     if(force || (clientRect.right != m_lastSize.x) || (clientRect.bottom != m_lastSize.y))
     {
-        // force recreate
         DestroyTargets();
 
         m_lastSize.x = clientRect.right;
@@ -357,7 +460,7 @@ bool ShaderGlass::TryResizeSwapChain(const RECT& clientRect, bool force)
         if(clientRect.right > 0 && clientRect.bottom > 0)
         {
             UINT flags = 0;
-            if(m_flipMode && m_allowTearing)
+            if((m_flipMode || m_useHDR) && m_allowTearing)
                 flags |= DXGI_SWAP_CHAIN_FLAG_ALLOW_TEARING;
             hr = m_swapChain->ResizeBuffers(0, static_cast<UINT>(clientRect.right), static_cast<UINT>(clientRect.bottom), DXGI_FORMAT_UNKNOWN, flags);
             assert(SUCCEEDED(hr));
@@ -371,13 +474,14 @@ bool ShaderGlass::TryResizeSwapChain(const RECT& clientRect, bool force)
             if(m_useHDR)
             {
                 SetSwapchainColorSpace();
+                m_lastHDRMaxNits = 0.0f;
+                UpdateHDRMetadata();
             }
         }
         return true;
     }
     return false;
 }
-
 void ShaderGlass::DestroyShaders()
 {
     m_shaderPasses.clear();
@@ -402,7 +506,7 @@ void ShaderGlass::DestroyPasses()
 void ShaderGlass::PresentFrame()
 {
     UINT presentFlags = 0;
-    if(m_flipMode)
+    if(m_flipMode || m_useHDR)
     {
         DXGI_PRESENT_PARAMETERS presentParameters {};
         presentFlags |= DXGI_PRESENT_RESTART;
@@ -416,32 +520,31 @@ void ShaderGlass::PresentFrame()
     {
         m_swapChain->Present(0, presentFlags);
     }
-    PostMessage(m_outputWindow, WM_PAINT, 0, 0); // necessary for click-through
+    PostMessage(m_outputWindow, WM_PAINT, 0, 0);
 }
 
 void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG frameTicks, int inputFrameNo)
 {
     auto nowTicks            = GetTickCount64();
     auto timeSinceLastRender = nowTicks - m_prevRenderTicks;
-    auto logicalFrameNo      = (int)roundf((nowTicks - m_startTicks) / 16.6666666f); // fix shaders at 60 fps
+    auto logicalFrameNo      = (int)roundf((nowTicks - m_startTicks) / 16.6666666f);
 
-    // same input
     if(inputFrameNo == m_prevInputFrameNo)
     {
         if(logicalFrameNo == m_prevLogicalFrameNo)
             return;
 
         auto timeSinceLastInput = nowTicks - frameTicks;
-        if(timeSinceLastInput < 20) // 3.3 ms delay allowance for frame timing
+        if(timeSinceLastInput < 20)
             return;
     }
 
     if(m_frameSkip > 0)
     {
-        if(logicalFrameNo == m_prevLogicalFrameNo) // already rendered
+        if(logicalFrameNo == m_prevLogicalFrameNo)
             return;
 
-        if((logicalFrameNo % (m_frameSkip + 1) != 0)) // don't need this frame
+        if((logicalFrameNo % (m_frameSkip + 1) != 0))
             return;
     }
 
@@ -452,7 +555,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(!m_running || !texture)
     {
-        // skip frame
         PresentFrame();
         return;
     }
@@ -460,7 +562,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
     std::unique_lock lock(m_mutex, std::try_to_lock);
     if(!lock.owns_lock())
     {
-        // still rendering, drop frame
         return;
     }
 
@@ -471,7 +572,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(!m_captureWindow && !m_clone)
     {
-        // desktop glass
         topLeft.x -= m_monitorOffset.x;
         topLeft.y -= m_monitorOffset.y;
     }
@@ -488,7 +588,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
     auto inputResized    = (m_captureWindow || m_image) && m_croppedAreaUpdated;
     m_croppedAreaUpdated = false;
 
-    // properties of the window being captured
     RECT  captureRect;
     POINT captureTopLeft;
     RECT  captureClient;
@@ -557,7 +656,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(clientRect.right <= 0 || clientRect.bottom <= 0)
     {
-        // skip
         PresentFrame();
         return;
     }
@@ -577,27 +675,23 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             clientHeight = (LONG)roundf(captureH / m_outputScaleH);
         }
 
-        // box if needed
         if(captureW != 0 && captureH != 0 && m_outputScaleW != 0 && m_outputScaleH != 0)
         {
             auto inputAspectRatio  = captureW / (float)captureH;
             auto outputAspectRatio = (clientWidth * m_outputScaleW) / (clientHeight * m_outputScaleH);
             if(outputAspectRatio > inputAspectRatio)
             {
-                // output is wider
                 auto newWidth = (LONG)roundf(clientHeight * (m_outputScaleH / m_outputScaleW) * inputAspectRatio);
                 boxX          = (clientWidth - newWidth) / 2.0f;
                 clientWidth   = newWidth;
             }
             else if(outputAspectRatio < inputAspectRatio)
             {
-                // output is narrower
                 auto newHeight = (LONG)roundf(clientWidth * (m_outputScaleW / m_outputScaleH) / inputAspectRatio);
                 boxY           = (clientHeight - newHeight) / 2.0f;
                 clientHeight   = newHeight;
             }
 
-            // center (fullscreen?)
             if(!m_freeScale)
             {
                 boxX += (clientRect.right - (captureW / m_outputScaleW)) / 2.0f;
@@ -613,7 +707,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
     m_boxX = static_cast<int>(boxX);
     m_boxY = static_cast<int>(boxY);
 
-    // final window/viewport size
     UINT viewportWidth  = static_cast<UINT>(clientWidth);
     UINT viewportHeight = static_cast<UINT>(clientHeight);
 
@@ -626,8 +719,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
     bool inputRescaled = m_inputRescaled;
     m_inputRescaled    = false;
     m_outputRescaled   = false;
-
-    // force recreate
     if(inputRescaled || inputResized || m_verticalUpdated)
     {
         if(m_preprocessedRenderTarget != nullptr)
@@ -640,7 +731,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         }
         else
         {
-            // clear any blanks around captured window
             m_context->ClearRenderTargetView(m_displayRenderTarget.get(), background_colour);
         }
     }
@@ -649,7 +739,7 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(m_newShaderPreset || m_verticalUpdated)
     {
-        m_startTicks = GetTickCount64(); // reset logical frame no
+        m_startTicks = GetTickCount64();
 
         DestroyShaders();
         if(m_newShaderPreset)
@@ -682,7 +772,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         m_verticalUpdated = false;
     }
 
-    // size of preprocessed input, which is 'original' for the shader chain
     UINT originalWidth  = static_cast<UINT>(destWidth / m_inputScaleW);
     UINT originalHeight = static_cast<UINT>(destHeight / m_inputScaleH);
 
@@ -694,7 +783,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         originalHeight      = static_cast<UINT>(captureH / m_inputScaleH);
     }
 
-    // create preprocessed output texture, scaled down size, inverted etc.
     if(m_preprocessedTexture == nullptr)
     {
         D3D11_TEXTURE2D_DESC desc2 = {};
@@ -715,7 +803,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         assert(SUCCEEDED(hr));
     }
 
-    // create texture render target
     if(m_preprocessedRenderTarget == nullptr)
     {
         hr = m_device->CreateRenderTargetView(m_preprocessedTexture.get(), NULL, m_preprocessedRenderTarget.put());
@@ -735,16 +822,17 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         m_textureSizes.insert(std::make_pair("Original", float4 {(float)originalWidth, (float)originalHeight, 1.0f / originalWidth, 1.0f / originalHeight}));
         m_textureSizes.insert(std::make_pair("FinalViewport", float4 {(float)viewportWidth, (float)viewportHeight, 1.0f / viewportWidth, 1.0f / viewportHeight}));
 
-        // preprocess takes original texture full size
         std::vector<std::array<UINT, 4>> passSizes;
         m_preprocessPass.Resize(capturedTextureDesc.Width, capturedTextureDesc.Height, originalWidth, originalHeight, m_textureSizes, passSizes);
 
-        UINT sourceWidth  = originalWidth;
-        UINT sourceHeight = originalHeight;
-        for(int p = 0; p < m_shaderPasses.size(); p++)
+        UINT sourceWidth     = originalWidth;
+        UINT sourceHeight    = originalHeight;
+        int  numPresetPasses = (int)m_shaderPasses.size() - (m_useHDR ? 1 : 0);
+
+        for(int p = 0; p < numPresetPasses; p++)
         {
             auto& shaderPass = m_shaderPasses[p];
-            if(p == m_shaderPasses.size() - 1) // last shader scales source to viewport
+            if(p == numPresetPasses - 1)
             {
                 if(m_vertical)
                 {
@@ -784,21 +872,23 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             }
         }
 
-        // call resize once all textureSizes are determined
-        for(int p = 0; p < m_shaderPasses.size(); p++)
+        if(m_useHDR)
+        {
+            passSizes.push_back({viewportWidth, viewportHeight, viewportWidth, viewportHeight});
+        }
+
+        for(int p = 0; p < (int)m_shaderPasses.size(); p++)
         {
             auto& shaderPass = m_shaderPasses[p];
             shaderPass.Resize(passSizes[p][0], passSizes[p][1], passSizes[p][2], passSizes[p][3], m_textureSizes, passSizes);
         }
     }
-
     if(rebuildPasses)
     {
         DestroyPasses();
 
         for(auto& pt : m_presetTextures)
         {
-            // re-add static preset textures
             m_passResources.insert(pt);
         }
 
@@ -826,7 +916,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
                 desc2.Format = pass.m_shader.m_format;
 
-                // use shader output size
                 desc2.Width     = pass.m_destWidth;
                 desc2.Height    = pass.m_destHeight;
                 desc2.BindFlags = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
@@ -850,7 +939,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
                     m_passResources.insert(std::make_pair(pass.m_shader.m_alias, passResource));
                 }
 
-                // create feedback textures if needed
                 if(m_requiresFeedback)
                 {
                     desc2.BindFlags = D3D11_BIND_SHADER_RESOURCE;
@@ -906,7 +994,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
         if(m_requiresFeedback)
         {
-            // add feedback for last pass
             int         p        = (int)m_shaderPasses.size() - 1;
             const auto& lastPass = m_shaderPasses[p];
 
@@ -933,16 +1020,13 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             }
         }
     }
-
     if(outputMoved || outputResized || inputResized || (m_lastPos.x != topLeft.x || m_lastPos.y != topLeft.y) || m_lockedAreaUpdated)
     {
-        // preprocess captured frame to a texture: crop (via scale & translation), reduce resolution, and whatnot (invert y?)
         float sx = 1.0f, sy = 1.0f, tx = 0.0f, ty = 0.0f;
         POINT finalTopLeft  = topLeft;
         m_lockedAreaUpdated = false;
         if(m_lockedArea.right - m_lockedArea.left != 0)
         {
-            // we only lock position
             finalTopLeft.x = m_lockedArea.left;
             finalTopLeft.y = m_lockedArea.top;
         }
@@ -950,7 +1034,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         {
             if(m_clone)
             {
-                // desktop clone (take from 0,0)
                 auto clientW = destWidth;
                 auto clientH = destHeight;
                 sx           = 1.0f * capturedTextureDesc.Width / clientW;
@@ -960,7 +1043,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             }
             else
             {
-                // desktop glass
                 auto clientW = destWidth;
                 auto clientH = destHeight;
                 sx           = 1.0f * capturedTextureDesc.Width / clientW;
@@ -987,7 +1069,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             }
             else
             {
-                // window glass
                 auto clientW = destWidth;
                 auto clientH = destHeight;
                 sx           = 1.0f * capturedTextureDesc.Width / clientW;
@@ -1007,7 +1088,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             ty *= -1.0f;
         }
 
-        // offset to move away from edges; needed for SG to consistently pick up n-th input pixel if asked to, but I should find a formula to calculate this
         tx += 0.0001f;
         ty += 0.0001f;
 
@@ -1018,7 +1098,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(m_captureWindow && !m_clone)
     {
-        // clear any blanks around captured window
         m_context->ClearRenderTargetView(m_preprocessedRenderTarget.get(), background_colour);
     }
 
@@ -1034,10 +1113,9 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         {
             auto mx = ci.ptScreenPos.x;
             auto my = ci.ptScreenPos.y;
-            
+
             if(!m_clone)
             {
-                // glass
                 mx -= m_monitorOffset.x;
                 my -= m_monitorOffset.y;
 
@@ -1076,12 +1154,11 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             }
         }
     }
-
     int p = 0;
     for(auto& shaderPass : m_shaderPasses)
     {
-        auto passBoxX = p == m_shaderPasses.size() - 1 ? m_boxX : 0;
-        auto passBoxY = p == m_shaderPasses.size() - 1 ? m_boxY : 0;
+        auto passBoxX = p == (int)m_shaderPasses.size() - 1 ? m_boxX : 0;
+        auto passBoxY = p == (int)m_shaderPasses.size() - 1 ? m_boxY : 0;
 
         if(p == 0)
         {
@@ -1096,7 +1173,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(m_requiresFeedback)
     {
-        // copy output to feedback
         for(size_t q = 0; q < m_shaderPasses.size() - 1; q++)
         {
             auto                           passOutput   = m_passResources.find(std::string("PassOutput") + std::to_string(q));
@@ -1108,7 +1184,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
             m_context->CopyResource(feedbackResource.get(), outputResource.get());
         }
 
-        // copy display texture as last pass feedback
         auto displayTexture = m_displayTexture;
         if(displayTexture)
         {
@@ -1139,7 +1214,6 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
     if(m_requiresHistory)
     {
-        // lookup oldest History for reuse
         const auto&                    lastHistory     = m_passResources.find(std::string("OriginalHistory" + std::to_string(m_requiresHistory)));
         auto                           lastHistoryView = lastHistory->second;
         winrt::com_ptr<ID3D11Resource> lastHistoryResource;
@@ -1147,11 +1221,9 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
 
         for(int h = m_requiresHistory; h > 1; h--)
         {
-            // remap middle Histories one frame back
             m_passResources[std::string("OriginalHistory" + std::to_string(h))] = m_passResources[std::string("OriginalHistory" + std::to_string(h - 1))];
         }
 
-        // copy current Original to History1 for next pass
         const auto&                    original = m_passResources.find("Original");
         winrt::com_ptr<ID3D11Resource> originalResource;
         original->second->GetResource(originalResource.put());
@@ -1207,7 +1279,6 @@ winrt::com_ptr<ID3D11Texture2D> ShaderGlass::GrabOutput()
             srcBox.bottom = srcBox.top + lastPass->m_destHeight;
             srcBox.back   = 1;
             srcBox.front  = 0;
-            // fractions :/
             if(srcBox.right > displayWidth)
             {
                 auto adj = srcBox.right - displayWidth;
