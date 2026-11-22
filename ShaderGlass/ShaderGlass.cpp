@@ -183,15 +183,88 @@ void ShaderGlass::UpdateHDRPassState()
             inverseTonemap = 0.0f;
             hdr10          = 0.0f;
         }
-        else if(lastShader.m_format == DXGI_FORMAT_R16G16B16A16_FLOAT)
-        {
-            inverseTonemap = 0.0f;
-            hdr10          = 1.0f;
-        }
     }
 
     m_hdrShader.SetParam("HDRInverseTonemap", &inverseTonemap);
     m_hdrShader.SetParam("HDR10", &hdr10);
+}
+
+void ShaderGlass::ApplyPresetHDRUniforms()
+{
+    if(!m_useHDR)
+        return;
+
+    float paperWhite  = 200.0f;
+    float maxNits     = 1000.0f;
+    float expandGamut = 0.0f;
+    for(const auto& p : m_hdrShader.Params())
+    {
+        if(p->name == "HDRPaperWhite")
+            paperWhite = p->currentValue;
+        else if(p->name == "HDRMaxNits")
+            maxNits = p->currentValue;
+        else if(p->name == "HDRExpandGamut")
+            expandGamut = p->currentValue;
+    }
+
+    uint32_t hdrMode         = 1u;
+    uint32_t expandGamutU    = (uint32_t)expandGamut;
+    uint32_t tonemapOpU      = 0u;
+    uint32_t sourceHdrU      = 0u;
+    uint32_t subpixelLayoutU = 0u;
+    uint32_t passthroughU    = 0u;
+    float    enableHdrF      = 1.0f;
+    float    minNitsF        = 0.0f;
+    float    scanlinesF      = 0.0f;
+    float    invTonemapF     = 1.0f;
+    float    hdr10F          = 1.0f;
+
+    if(!m_shaderPreset->m_shaders.empty())
+    {
+        const auto& lastShader = m_shaderPreset->m_shaders.back();
+        if(lastShader.m_format == DXGI_FORMAT_R10G10B10A2_UNORM)
+        {
+            passthroughU = 1u;
+            invTonemapF  = 0.0f;
+            hdr10F       = 0.0f;
+        }
+    }
+
+    for(auto& s : m_shaderPreset->m_shaders)
+    {
+        for(auto& p : s.Params())
+        {
+            if(p->maxValue != p->minValue)
+                continue;
+
+            if(p->name == "HDR" || p->name == "HDRMode")
+                s.SetParam(p, &hdrMode);
+            else if(p->name == "BrightnessNits" || p->name == "PaperWhiteNits")
+                s.SetParam(p, &paperWhite);
+            else if(p->name == "PeakNits" || p->name == "MaxNits")
+                s.SetParam(p, &maxNits);
+            else if(p->name == "EnableHDR")
+                s.SetParam(p, &enableHdrF);
+            else if(p->name == "MinNits")
+                s.SetParam(p, &minNitsF);
+            else if(p->name == "ExpandGamut")
+                s.SetParam(p, &expandGamutU);
+            else if(p->name == "TonemapOperator")
+                s.SetParam(p, &tonemapOpU);
+            else if(p->name == "SourceHDR")
+                s.SetParam(p, &sourceHdrU);
+            else if(p->name == "Passthrough")
+                s.SetParam(p, &passthroughU);
+            else if(p->name == "Scanlines")
+                s.SetParam(p, &scanlinesF);
+            else if(p->name == "SubpixelLayout")
+                s.SetParam(p, &subpixelLayoutU);
+            else if(p->name == "InverseTonemap")
+                s.SetParam(p, &invTonemapF);
+            else if(p->name == "HDR10")
+                s.SetParam(p, &hdr10F);
+        }
+    }
 }
 
 void ShaderGlass::RebuildShaders()
@@ -255,7 +328,9 @@ void ShaderGlass::RebuildShaders()
     }
 
     UpdateHDRPassState();
+    ApplyPresetHDRUniforms();
 }
+
 void ShaderGlass::SetInputScale(float w, float h)
 {
     m_inputScaleW   = w;
@@ -351,6 +426,7 @@ void ShaderGlass::UpdateParams()
                 m_hdrShader.SetParam(p, &p->currentValue);
         }
         UpdateHDRMetadata();
+        ApplyPresetHDRUniforms();
     }
 }
 
@@ -472,7 +548,7 @@ void ShaderGlass::UpdateHDRMetadata()
     metaData.BluePrimary[1]            = (UINT16)(0.04600f * 50000.0f);
     metaData.WhitePoint[0]             = (UINT16)(0.31270f * 50000.0f);
     metaData.WhitePoint[1]             = (UINT16)(0.32900f * 50000.0f);
-    metaData.MaxMasteringLuminance     = (UINT)(maxNits * 10000.0f);
+    metaData.MaxMasteringLuminance     = (UINT)(maxNits);
     metaData.MinMasteringLuminance     = (UINT)(0.001f * 10000.0f);
     metaData.MaxContentLightLevel      = 0;
     metaData.MaxFrameAverageLightLevel = 0;
