@@ -18,11 +18,12 @@ public:
 
         // UBO layout matching RetroArch Nightly hdr_sm5.hlsl.h (16-byte aligned)
         Params.push_back(ShaderParam("MVP", 0, 0, 64, 0.0f, 0.0f, 0.0f));
-        Params.push_back(ShaderParam("HDRPaperWhite", 0, 64, 4, 80.0f, 1000.0f, 200.0f, 10.0f, "HDR Paper White Luminance"));
-        Params.push_back(ShaderParam("HDRMaxNits", 0, 68, 4, 100.0f, 4000.0f, 1000.0f, 50.0f, "HDR Peak Luminance"));
-        Params.push_back(ShaderParam("HDRExpandGamut", 0, 72, 4, 0.0f, 3.0f, 0.0f, 1.0f, "HDR Expand Gamut (0=Off 1=Exp 2=P3 3=Super)"));
+        Params.push_back(ShaderParam("HDRPaperWhite", 0, 64, 4, 80.0f, 1000.0f, 200.0f, 10.0f, "Brightness"));
+        Params.push_back(ShaderParam("HDRMaxNits", 0, 68, 4, 100.0f, 4000.0f, 1000.0f, 50.0f, "Peak Brightness"));
+        Params.push_back(ShaderParam("HDRExpandGamut", 0, 72, 4, 0.0f, 3.0f, 0.0f, 1.0f, "Colour Boost (0=Accurate 1=Exp 2=Wide 3=Super)"));
         Params.push_back(ShaderParam("HDRInverseTonemap", 0, 76, 4, 0.0f, 1.0f, 1.0f, 1.0f));
         Params.push_back(ShaderParam("HDR10", 0, 80, 4, 0.0f, 1.0f, 1.0f, 1.0f));
+        Params.push_back(ShaderParam("HDRUseDisplayPeak", 0, 84, 4, 0.0f, 1.0f, 1.0f, 1.0f, "Use Display Peak"));
         Samplers.push_back(ShaderSampler("Source", 2));
 
         VertexSource = R"(
