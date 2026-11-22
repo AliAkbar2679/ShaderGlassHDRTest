@@ -14,7 +14,7 @@ GNU General Public License v3.0
 #include "resource.h"
 
 static HRESULT     hr;
-static const float background_colour = {0, 0, 0, 1.0f};
+static const float background_colour[4] = {0, 0, 0, 1.0f};
 static float       GetDisplayPeakLuminance(IDXGISwapChain4* swapChain);
 
 ShaderGlass::ShaderGlass(CursorEmulator& cursorEmulator) :
