@@ -7,6 +7,7 @@ GNU General Public License v3.0
 
 #include "pch.h"
 #include <dxgi1_5.h>
+#include <dxgi1_6.h>
 #include "ShaderGlass.h"
 #include "ShaderList.h"
 #include "CursorEmulator.h"
@@ -194,9 +195,10 @@ void ShaderGlass::ApplyPresetHDRUniforms()
     if(!m_useHDR)
         return;
 
-    float paperWhite  = 200.0f;
-    float maxNits     = 1000.0f;
-    float expandGamut = 0.0f;
+    float paperWhite     = 200.0f;
+    float maxNits        = 1000.0f;
+    float expandGamut    = 0.0f;
+    float useDisplayPeak = 1.0f;
     for(const auto& p : m_hdrShader.Params())
     {
         if(p->name == "HDRPaperWhite")
@@ -205,6 +207,15 @@ void ShaderGlass::ApplyPresetHDRUniforms()
             maxNits = p->currentValue;
         else if(p->name == "HDRExpandGamut")
             expandGamut = p->currentValue;
+        else if(p->name == "HDRUseDisplayPeak")
+            useDisplayPeak = p->currentValue;
+    }
+
+    if(useDisplayPeak > 0.5f)
+    {
+        float detected = GetDisplayPeakLuminance(m_swapChain4.get());
+        if(detected > 0.0f)
+            maxNits = detected;
     }
 
     uint32_t hdrMode         = 1u;
@@ -519,19 +530,45 @@ void ShaderGlass::SetSwapchainColorSpace()
     }
 }
 
+static float GetDisplayPeakLuminance(IDXGISwapChain4* swapChain)
+{
+    if(!swapChain)
+        return 0.0f;
+
+    winrt::com_ptr<IDXGIOutput> output;
+    if(SUCCEEDED(swapChain->GetContainingOutput(output.put())) && output)
+    {
+        winrt::com_ptr<IDXGIOutput6> output6;
+        if(SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(output6.put()))) && output6)
+        {
+            DXGI_OUTPUT_DESC1 desc1 = {};
+            if(SUCCEEDED(output6->GetDesc1(&desc1)) && desc1.MaxLuminance > 0.0f)
+                return desc1.MaxLuminance;
+        }
+    }
+    return 0.0f;
+}
+
 void ShaderGlass::UpdateHDRMetadata()
 {
     if(!m_useHDR || !m_swapChain4.get())
         return;
 
-    float maxNits = 1000.0f;
+    float maxNits        = 1000.0f;
+    float useDisplayPeak = 1.0f;
     for(const auto& p : m_hdrShader.Params())
     {
         if(p->name == "HDRMaxNits")
-        {
             maxNits = p->currentValue;
-            break;
-        }
+        else if(p->name == "HDRUseDisplayPeak")
+            useDisplayPeak = p->currentValue;
+    }
+
+    if(useDisplayPeak > 0.5f)
+    {
+        float detected = GetDisplayPeakLuminance(m_swapChain4.get());
+        if(detected > 0.0f)
+            maxNits = detected;
     }
 
     if(maxNits == m_lastHDRMaxNits)
