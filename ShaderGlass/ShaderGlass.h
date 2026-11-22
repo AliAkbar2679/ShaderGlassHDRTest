@@ -57,9 +57,6 @@ private:
     void SetSwapchainColorSpace();
     void UpdateHDRMetadata();
     void UpdateHDRPassState();
-    void SetSwapchainColorSpace();
-    void UpdateHDRMetadata();
-    void UpdateHDRPassState();
     void ApplyPresetHDRUniforms();
     void DestroyShaders();
     void DestroyPasses();
