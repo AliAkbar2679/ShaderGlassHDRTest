@@ -15,7 +15,36 @@ GNU General Public License v3.0
 
 static HRESULT     hr;
 static const float background_colour[4] = {0, 0, 0, 1.0f};
-static float       GetDisplayPeakLuminance(IDXGISwapChain4* swapChain);
+struct DisplayHDRCaps
+{
+    float maxLuminance = 0.0f;
+    float minLuminance = 0.0f;
+};
+
+static DisplayHDRCaps GetDisplayHDRCaps(IDXGISwapChain4* swapChain)
+{
+    DisplayHDRCaps caps;
+    if(!swapChain)
+        return caps;
+
+    winrt::com_ptr<IDXGIOutput> output;
+    if(SUCCEEDED(swapChain->GetContainingOutput(output.put())) && output)
+    {
+        winrt::com_ptr<IDXGIOutput6> output6;
+        if(SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(output6.put()))) && output6)
+        {
+            DXGI_OUTPUT_DESC1 desc1 = {};
+            if(SUCCEEDED(output6->GetDesc1(&desc1)))
+            {
+                if(desc1.MaxLuminance > 0.0f)
+                    caps.maxLuminance = desc1.MaxLuminance;
+                if(desc1.MinLuminance > 0.0f)
+                    caps.minLuminance = desc1.MinLuminance;
+            }
+        }
+    }
+    return caps;
+}
 
 ShaderGlass::ShaderGlass(CursorEmulator& cursorEmulator) :
     m_lastSize {}, m_lastPos {}, m_lastCaptureWindowPos {}, m_lastCaptureWindowSize {}, m_passthroughDef(), m_shaderPreset(new Preset(m_passthroughDef)),
@@ -214,9 +243,9 @@ void ShaderGlass::ApplyPresetHDRUniforms()
 
     if(useDisplayPeak > 0.5f)
     {
-        float detected = GetDisplayPeakLuminance(m_swapChain4.get());
-        if(detected > 0.0f)
-            maxNits = detected;
+        DisplayHDRCaps caps = GetDisplayHDRCaps(m_swapChain4.get());
+        if(caps.maxLuminance > 0.0f)
+            maxNits = caps.maxLuminance;
     }
 
     uint32_t hdrMode         = 1u;
@@ -531,31 +560,13 @@ void ShaderGlass::SetSwapchainColorSpace()
     }
 }
 
-static float GetDisplayPeakLuminance(IDXGISwapChain4* swapChain)
-{
-    if(!swapChain)
-        return 0.0f;
-
-    winrt::com_ptr<IDXGIOutput> output;
-    if(SUCCEEDED(swapChain->GetContainingOutput(output.put())) && output)
-    {
-        winrt::com_ptr<IDXGIOutput6> output6;
-        if(SUCCEEDED(output->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(output6.put()))) && output6)
-        {
-            DXGI_OUTPUT_DESC1 desc1 = {};
-            if(SUCCEEDED(output6->GetDesc1(&desc1)) && desc1.MaxLuminance > 0.0f)
-                return desc1.MaxLuminance;
-        }
-    }
-    return 0.0f;
-}
-
 void ShaderGlass::UpdateHDRMetadata()
 {
     if(!m_useHDR || !m_swapChain4.get())
         return;
 
     float maxNits        = 1000.0f;
+    float minNits        = 0.005f;
     float useDisplayPeak = 1.0f;
     for(const auto& p : m_hdrShader.Params())
     {
@@ -565,11 +576,13 @@ void ShaderGlass::UpdateHDRMetadata()
             useDisplayPeak = p->currentValue;
     }
 
-    if(useDisplayPeak > 0.5f)
+    DisplayHDRCaps caps = GetDisplayHDRCaps(m_swapChain4.get());
+    if(caps.minLuminance > 0.0f)
+        minNits = caps.minLuminance;
+
+    if(useDisplayPeak > 0.5f && caps.maxLuminance > 0.0f)
     {
-        float detected = GetDisplayPeakLuminance(m_swapChain4.get());
-        if(detected > 0.0f)
-            maxNits = detected;
+        maxNits = caps.maxLuminance;
     }
 
     if(maxNits == m_lastHDRMaxNits)
@@ -587,9 +600,9 @@ void ShaderGlass::UpdateHDRMetadata()
     metaData.WhitePoint[0]             = (UINT16)(0.31270f * 50000.0f);
     metaData.WhitePoint[1]             = (UINT16)(0.32900f * 50000.0f);
     metaData.MaxMasteringLuminance     = (UINT)(maxNits);
-    metaData.MinMasteringLuminance     = (UINT)(0.001f * 10000.0f);
-    metaData.MaxContentLightLevel      = 0;
-    metaData.MaxFrameAverageLightLevel = 0;
+    metaData.MinMasteringLuminance     = (UINT)(minNits * 10000.0f);
+    metaData.MaxContentLightLevel      = (UINT16)(maxNits);
+    metaData.MaxFrameAverageLightLevel = (UINT16)(maxNits);
 
     m_swapChain4->SetHDRMetaData(DXGI_HDR_METADATA_TYPE_HDR10, sizeof(DXGI_HDR_METADATA_HDR10), &metaData);
 }
@@ -1249,6 +1262,12 @@ void ShaderGlass::Process(winrt::com_ptr<ID3D11Texture2D> texture, ULONGLONG fra
         m_preprocessPass.UpdateMVP(sx, sy, tx, ty);
         m_lastPos.x = topLeft.x;
         m_lastPos.y = topLeft.y;
+
+        if(m_useHDR)
+        {
+            UpdateHDRMetadata();
+            ApplyPresetHDRUniforms();
+        }
     }
 
     if(m_captureWindow && !m_clone)
