@@ -225,16 +225,20 @@ void ShaderGlass::ApplyPresetHDRUniforms()
     if(!m_useHDR)
         return;
 
-    float paperWhite     = 200.0f;
-    float maxNits        = 1000.0f;
-    float expandGamut    = 0.0f;
-    float useDisplayPeak = 1.0f;
+    float        paperWhite     = 200.0f;
+    float        maxNits        = 1000.0f;
+    float        expandGamut    = 0.0f;
+    float        useDisplayPeak = 1.0f;
+    ShaderParam* maxNitsParam   = nullptr;
     for(const auto& p : m_hdrShader.Params())
     {
         if(p->name == "HDRPaperWhite")
             paperWhite = p->currentValue;
         else if(p->name == "HDRMaxNits")
-            maxNits = p->currentValue;
+        {
+            maxNits      = p->currentValue;
+            maxNitsParam = p;
+        }
         else if(p->name == "HDRExpandGamut")
             expandGamut = p->currentValue;
         else if(p->name == "HDRUseDisplayPeak")
@@ -245,7 +249,14 @@ void ShaderGlass::ApplyPresetHDRUniforms()
     {
         DisplayHDRCaps caps = GetDisplayHDRCaps(m_swapChain4.get());
         if(caps.maxLuminance > 0.0f)
+        {
             maxNits = caps.maxLuminance;
+            if(maxNitsParam && maxNitsParam->currentValue != maxNits)
+            {
+                maxNitsParam->currentValue = maxNits;
+                m_hdrShader.SetParam("HDRMaxNits", &maxNits);
+            }
+        }
     }
 
     uint32_t hdrMode         = 1u;
@@ -585,10 +596,11 @@ void ShaderGlass::UpdateHDRMetadata()
         maxNits = caps.maxLuminance;
     }
 
-    if(maxNits == m_lastHDRMaxNits)
+    if(maxNits == m_lastHDRMaxNits && minNits == m_lastHDRMinNits)
         return;
 
     m_lastHDRMaxNits = maxNits;
+    m_lastHDRMinNits = minNits;
 
     DXGI_HDR_METADATA_HDR10 metaData   = {};
     metaData.RedPrimary[0]             = (UINT16)(0.70800f * 50000.0f);
