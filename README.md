@@ -1,5 +1,42 @@
 ![License](https://img.shields.io/github/license/mausimus/ShaderGlass?color=red) ![GitHub Stars](https://img.shields.io/github/stars/mausimus/ShaderGlass?color=yellow) ![Downloads](https://img.shields.io/github/downloads/mausimus/ShaderGlass/total) ![Latest Release](https://img.shields.io/github/release-date/mausimus/ShaderGlass?label=latest%20release&color=blue) ![Beta Release](https://img.shields.io/github/release-date-pre/mausimus/ShaderGlass?label=beta%20release&color=orange)
 
+## DISCLAIMER! Modified by your everyday idiot with zero coding knowledge and ability, using AI (Gemini, the free one), double checked and audited across multiple chats for almost a week to find any discrepancies/bugs/errors as best as I could until all chats said that it is good.
+
+## Purpose of this fork
+
+I created this fork because ShaderGlass did not have HDR support, due to which I started using RetroArch (1.22.2, later Nightly) + WindowCast for HDR, and while it looked awesome, WindowCast was... buggy, to say the least, and has been largely abandoned with no update for years, and honestly it was a hassle to set up at first. I then thought, since the source code for both ShaderGlass and RetroArch is available, and since AI have gotten quite decent at coding, why not just do an exact mathematical 1:1 implementation of RetroArch Nightly's HDR inside ShaderGlass. As stated in the disclaimer, I understand AI have memory rot over large chats, so I kept opening fresh chats, uploaded all necessary source files (oevr 40 for RetroArch), and asked it to compare/audit and confirm if math was an exact 1:1 replication. Now ShaderGlass has proper HDR support (literally has RetroArch's HDR). I asked Gemini to make a changelog or PR Description, pasted it below:
+
+## Changes
+Implement true 10-bit PQ HDR10 rendering pipeline (1:1 RetroArch D3D11 HDR port)
+
+## Summary
+Replaces the placeholder 16-bit scRGB swapchain toggle with a full 10-bit ST.2084 PQ (Rec.2020) HDR10 output pipeline matching RetroArch's D3D11 HDR implementation (`hdr_sm5.hlsl.h` / `d3d11.c` / `dxgi_common.c`).
+
+### Why
+Previously, enabling **Use HDR** switched the swapchain format without performing gamma-to-linear decoding, gamut rotation, inverse tone-mapping, or ST.2084 PQ encoding. This caused SDR Slang shaders to look washed out or over-bloomed in linear scRGB space and prevented native PQ HDR shaders (such as *Sony Megatron Color Video Monitor*) from outputting valid HDR10 signals.
+
+## Key Changes
+- **HDR10 Swapchain & Display Detection (`ShaderGlass.cpp`)**
+  - Queries `IDXGIOutput6::GetDesc1()` to verify active Windows HDR (`DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020`) and automatically falls back to SDR if Windows HDR is disabled or unsupported on the target display.
+  - Configures the swapchain to `DXGI_FORMAT_R10G10B10A2_UNORM` with `DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020` (`FLIP_DISCARD`) and dynamically pushes `DXGI_HDR_METADATA_HDR10` (Rec.2020 primaries, D65 white point, and display luminance limits) via `IDXGISwapChain4::SetHDRMetaData()`.
+- **RetroArch-Compatible HDR Output Pass (`Shaders/HDRShaderDef.h`)**
+  - Appends an `hdr_output` pass matching RetroArch's `hdr_sm5.hlsl.h` math:
+    - `HDRDecodeGamma` (`pow(abs(value), 2.4)`) with sRGB FBO format normalization (`B8G8R8A8_UNORM_SRGB` -> `B8G8R8A8_UNORM`) on the preceding pass to avoid double linearization.
+    - `To2020` gamut rotation supporting all four RetroArch **Colour Boost** modes (`0 = Accurate / Rec.709->2020`, `1 = Expanded 709`, `2 = Wide / DCI-P3`, `3 = Super / Rec. 2020`).
+    - `InverseTonemap` paper-white scaling and SMPTE ST.2084 (`LinearToST2084`) PQ encoding.
+  - Exposes live shader parameters in **Shader Parameters** (`Brightness` / Paper White nits, `Peak Brightness`, `Colour Boost`, and `Use Display Peak`).
+- **Native HDR Shader Passthrough (`ShaderGlass.cpp`)**
+  - Detects when the active preset's final pass already outputs `DXGI_FORMAT_R10G10B10A2_UNORM` (e.g., *Sony Megatron*), disables redundant inverse tone-mapping / PQ encoding (`Passthrough = 1`), and forwards `BrightnessNits`, `PeakNits`, `ExpandGamut`, and `HDRMode` uniforms directly to the preset.
+- **Menu & Registry Persistence (`ShaderWindow.cpp`, `Resource.h`)**
+  - Persists the **Use HDR** option in the registry and enforces Flip presentation mode when HDR is active.
+
+## Testing
+- Verified with standard SDR Slang presets (e.g., `crt-guest-advanced-ntsc`) on a Lenovo Legion 5 100% DCI-P3 1600p WQXGA OLED EDO EF10QBC64.C panel (`1015` nits peak), don't use Sony Megatron or MegaBezel so haven't tested those, or any, HDR CRT Shaders.
+- Confirmed dynamic peak luminance detection via `IDXGIOutput6` (`Use Display Peak`) and clean fallback when Windows HDR is toggled off.
+
+
+
+
 ## ShaderGlass
 
 Overlay for running GPU shaders on top of Windows desktop and Wine.
