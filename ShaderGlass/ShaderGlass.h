@@ -123,6 +123,7 @@ private:
     Preset                                            m_hdrPreset;
     Shader                                            m_hdrShader;
     float                                             m_lastHDRMaxNits {0.0f};
+    float                                             m_lastHDRMinNits {0.0f};
     std::unique_ptr<Preset>                           m_shaderPreset {nullptr};
     std::unique_ptr<Preset>                           m_newShaderPreset {nullptr};
     std::vector<std::tuple<int, std::string, double>> m_newParams;
