@@ -46,6 +46,57 @@ static DisplayHDRCaps GetDisplayHDRCaps(IDXGISwapChain4* swapChain)
     return caps;
 }
 
+static bool IsDisplayHDRSupported(IDXGIFactory2* factory, HWND hwnd)
+{
+    if(!factory || !hwnd)
+        return false;
+
+    RECT windowRect = {};
+    GetWindowRect(hwnd, &windowRect);
+
+    winrt::com_ptr<IDXGIOutput>  bestOutput;
+    winrt::com_ptr<IDXGIAdapter> adapter;
+    long                         bestArea = -1;
+
+    for(UINT a = 0; factory->EnumAdapters(a, adapter.put()) != DXGI_ERROR_NOT_FOUND; a++)
+    {
+        winrt::com_ptr<IDXGIOutput> output;
+        for(UINT o = 0; adapter->EnumOutputs(o, output.put()) != DXGI_ERROR_NOT_FOUND; o++)
+        {
+            DXGI_OUTPUT_DESC desc = {};
+            if(SUCCEEDED(output->GetDesc(&desc)))
+            {
+                long ax1 = windowRect.left, ay1 = windowRect.top, ax2 = windowRect.right, ay2 = windowRect.bottom;
+                long bx1 = desc.DesktopCoordinates.left, by1 = desc.DesktopCoordinates.top;
+                long bx2 = desc.DesktopCoordinates.right, by2 = desc.DesktopCoordinates.bottom;
+                long area = (std::max)(0L, (std::min)(ax2, bx2) - (std::max)(ax1, bx1)) *
+                            (std::max)(0L, (std::min)(ay2, by2) - (std::max)(ay1, by1));
+                if(area > bestArea)
+                {
+                    bestArea   = area;
+                    bestOutput = output;
+                }
+            }
+            output = nullptr;
+        }
+        adapter = nullptr;
+    }
+
+    if(!bestOutput)
+        return false;
+
+    winrt::com_ptr<IDXGIOutput6> output6;
+    if(SUCCEEDED(bestOutput->QueryInterface(__uuidof(IDXGIOutput6), reinterpret_cast<void**>(output6.put()))) && output6)
+    {
+        DXGI_OUTPUT_DESC1 desc1 = {};
+        if(SUCCEEDED(output6->GetDesc1(&desc1)))
+        {
+            return desc1.ColorSpace == DXGI_COLOR_SPACE_RGB_FULL_G2084_NONE_P2020;
+        }
+    }
+    return false;
+}
+
 ShaderGlass::ShaderGlass(CursorEmulator& cursorEmulator) :
     m_lastSize {}, m_lastPos {}, m_lastCaptureWindowPos {}, m_lastCaptureWindowSize {}, m_passthroughDef(), m_shaderPreset(new Preset(m_passthroughDef)),
     m_preprocessShader(m_preprocessShaderDef), m_preprocessPreset(m_preprocessPresetDef), m_preprocessPass(m_preprocessShader, m_preprocessPreset, true),
@@ -127,6 +178,11 @@ void ShaderGlass::Initialize(HWND                                outputWindow,
 
             hr = dxgiAdapter->GetParent(__uuidof(IDXGIFactory2), (void**)dxgiFactory.put());
             assert(SUCCEEDED(hr));
+        }
+
+        if(m_useHDR && !IsDisplayHDRSupported(dxgiFactory.get(), m_outputWindow))
+        {
+            m_useHDR = false;
         }
 
         DXGI_SWAP_CHAIN_DESC1 d3d11SwapChainDesc = {};
